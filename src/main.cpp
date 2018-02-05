@@ -4,6 +4,7 @@
 #include <iostream>
 #include <thread>
 #include <vector>
+#include <utility>
 #include "Eigen-3.3/Eigen/Core"
 #include "Eigen-3.3/Eigen/QR"
 #include "MPC.h"
@@ -65,6 +66,31 @@ Eigen::VectorXd polyfit(Eigen::VectorXd xvals, Eigen::VectorXd yvals,
   return result;
 }
 
+// Helper to transform to car's prespective
+std::pair<Eigen::VectorXd, Eigen::VectorXd> transformToCarXY(
+    const vector<double>& X, double x, const vector<double>& Y, double y,
+    double psi) {
+  Eigen::VectorXd retX(X.size());
+  Eigen::VectorXd retY(Y.size());
+  for (int i = 0; i < (int) X.size(); i++) {
+    retX(i) = (X[i] - x)*cos(psi) + (Y[i] - y)*sin(psi);
+    retY(i) = (Y[i] - y)*cos(psi) - (X[i] - x)*sin(psi);
+  }
+
+  return std::make_pair(retX, retY);
+}
+
+// use 3rd order polynomial as suggested.
+Eigen::VectorXd getCoeffs(const Eigen::VectorXd& X_transformed,
+                          const Eigen::VectorXd& Y_transformed) {
+  return polyfit(X_transformed, Y_transformed, 3);
+}
+
+// Use 3rd order poly as suggested
+std::pair<double, double> calculateCteAndEpsi(const Eigen::VectorXd& coeffs) {
+  return std::make_pair(polyeval(coeffs, 0), -atan(coeffs[1]));
+}
+
 int main() {
   uWS::Hub h;
 
@@ -98,8 +124,16 @@ int main() {
           * Both are in between [-1, 1].
           *
           */
-          double steer_value;
-          double throttle_value;
+          std::pair<Eigen::VectorXd, Eigen::VectorXd> transXYPair =
+              transformToCarXY(ptsx, px, ptsy, py, psi);
+          Eigen::VectorXd coeffs = getCoeffs(transXYPair.first,
+                                             transXYPair.second);
+          std::pair<double, double> cteEpsiPair = calculateCteAndEpsi(coeffs);
+          Eigen::VectorXd state(6);
+          state << 0, 0, 0, v, cteEpsiPair.first, cteEpsiPair.second;
+          vector<double> solution = mpc.Solve(state, coeffs);
+          double steer_value = -mpc.steering_angle_sol_ / deg2rad(25.0);
+          double throttle_value = mpc.throttle_sol_;
 
           json msgJson;
           // NOTE: Remember to divide by deg2rad(25) before you send the steering value back.
@@ -107,9 +141,9 @@ int main() {
           msgJson["steering_angle"] = steer_value;
           msgJson["throttle"] = throttle_value;
 
-          //Display the MPC predicted trajectory 
-          vector<double> mpc_x_vals;
-          vector<double> mpc_y_vals;
+          //Display the MPC predicted trajectory
+          const vector<double> mpc_x_vals = mpc.x_sol_;
+          const vector<double> mpc_y_vals = mpc.y_sol_;
 
           //.. add (x,y) points to list here, points are in reference to the vehicle's coordinate system
           // the points in the simulator are connected by a Green line
@@ -121,12 +155,16 @@ int main() {
           vector<double> next_x_vals;
           vector<double> next_y_vals;
 
+          for (int i = 0; i < (int)ptsx.size(); i++) {
+            next_x_vals.emplace_back(transXYPair.first(i));
+            next_y_vals.emplace_back(transXYPair.second(i));
+          }
+
           //.. add (x,y) points to list here, points are in reference to the vehicle's coordinate system
           // the points in the simulator are connected by a Yellow line
 
           msgJson["next_x"] = next_x_vals;
           msgJson["next_y"] = next_y_vals;
-
 
           auto msg = "42[\"steer\"," + msgJson.dump() + "]";
           std::cout << msg << std::endl;
